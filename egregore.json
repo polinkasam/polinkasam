@@ -1,0 +1,32 @@
+{
+  "mode": "local",
+  "org_name": "polinkasam",
+  "github_org": "polinkasam",
+  "memory_repo": "https://github.com/polinkasam/polinkasam-memory.git",
+  "slug": "polinkasam",
+  "repo_name": "polinkasam",
+  "base_branch": "main",
+  "repos": [],
+  "upstream_url": "https://github.com/egregore-labs/egregore.git",
+  "report_url": "https://xgksfrirtdumacvmfkzj.supabase.co",
+  "report_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhna3NmcmlydGR1bWFjdm1ma3pqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA5OTA1ODksImV4cCI6MjA4NjU2NjU4OX0.1UWNgER6nQazrayly1KDrswClURUkGKxeirZg5L8uk4",
+  "schema_version": "egregore-config/v1",
+  "org_id": "org_eae103add8bd484387e3fcf4085b3095",
+  "profile": {
+    "schema_version": "egregore-profile/v1",
+    "revision": "profile/v1",
+    "identity_path": "memory/identity/EGREGORE.md",
+    "purpose_path": "memory/identity/EGREGORE.md",
+    "principles_path": "memory/identity/EGREGORE.md",
+    "conventions_path": "memory/identity/EGREGORE.md",
+    "declared_sections": [
+      "essence",
+      "values",
+      "domains",
+      "voice",
+      "decision-grammar"
+    ],
+    "default_policy": "all-access-v1",
+    "default_context_budget": 8000
+  }
+}

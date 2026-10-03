@@ -1,0 +1,756 @@
+#!/usr/bin/env bash
+set -euo pipefail
+set +x
+
+# Human-consented notification transport.
+#
+# No command in this file can plan and dispatch in one step:
+#   1. plan     — resolve exact destinations and persist immutable content
+#   2. approve  — record one explicit human approval for that exact digest
+#   3. dispatch — consume the one-use approval and send the stored payload
+#
+# Legacy `send` / `group` commands only create a plan and exit 4. They never
+# dispatch. This makes the invariant fail closed for stale skills and jobs.
+
+NOTIFY_CHECKOUT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=/dev/null
+source "$NOTIFY_CHECKOUT/bin/lib/scratch.sh"
+SCRIPT_DIR="${EGREGORE_NOTIFY_PROJECT_DIR:-$NOTIFY_CHECKOUT}"
+CONFIG="$SCRIPT_DIR/egregore.json"
+
+[ -f "$CONFIG" ] || {
+  echo "Error: egregore.json not found." >&2
+  exit 1
+}
+
+umask 077
+
+MODE="$(jq -r '.mode // "connected"' "$CONFIG" 2>/dev/null || echo connected)"
+ORG_SLUG="$(jq -r '.slug // empty' "$CONFIG" 2>/dev/null || true)"
+ORG_NAME="$(jq -r '.org_name // .slug // empty' "$CONFIG" 2>/dev/null || true)"
+SESSION_ID="$(sed -n '1p' "$SCRIPT_DIR/.egregore-session-id" 2>/dev/null || true)"
+SESSION_ID="${SESSION_ID:-no-session}"
+PROJECT_HASH="$(printf '%s' "$SCRIPT_DIR" | cksum | awk '{print $1}')"
+STATE_DIR="${EGREGORE_NOTIFY_STATE_DIR:-$HOME/.egregore/notifications/$PROJECT_HASH}"
+RELAY_URL="${EGREGORE_NOTIFY_RELAY_URL:-https://egregore-production-55f2.up.railway.app}"
+mkdir -p "$STATE_DIR"
+chmod 700 "$STATE_DIR" 2>/dev/null || true
+
+if [ -f "$SCRIPT_DIR/.env" ]; then
+  EGREGORE_API_URL="${EGREGORE_API_URL:-$(grep '^EGREGORE_API_URL=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d'=' -f2- || true)}"
+  EGREGORE_API_KEY="${EGREGORE_API_KEY:-$(grep '^EGREGORE_API_KEY=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d'=' -f2- || true)}"
+  SLACK_BOT_TOKEN="${SLACK_BOT_TOKEN:-$(grep '^SLACK_BOT_TOKEN=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d'=' -f2- || true)}"
+fi
+API_URL="${EGREGORE_API_URL:-$(jq -r '.api_url // empty' "$CONFIG" 2>/dev/null)}"
+API_KEY="${EGREGORE_API_KEY:-}"
+
+die() {
+  echo "Error: $*" >&2
+  exit 1
+}
+
+hash_text() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | awk '{print $1}'
+  else
+    sha256sum | awk '{print $1}'
+  fi
+}
+
+random_token() {
+  openssl rand -hex 16
+}
+
+plan_path() {
+  local id="$1"
+  case "$id" in
+    ""|*[!a-f0-9]*) die "invalid notification plan id" ;;
+  esac
+  printf '%s/%s.json\n' "$STATE_DIR" "$id"
+}
+
+read_plan() {
+  local id="$1"
+  local path
+  path="$(plan_path "$id")"
+  [ -f "$path" ] || die "notification plan not found: $id"
+  jq -e . "$path" >/dev/null 2>&1 || die "notification plan is unreadable: $id"
+  printf '%s\n' "$path"
+}
+
+canonical_plan() {
+  jq -cS '{
+    version,
+    id,
+    session_id,
+    mode,
+    org_slug,
+    org_name,
+    kind,
+    recipient,
+    message,
+    channels,
+    deliveries,
+    no_fallback,
+    expires_at,
+    server_plan_token
+  }' "$1"
+}
+
+verify_digest() {
+  local path="$1"
+  local stored actual
+  stored="$(jq -r '.digest' "$path")"
+  actual="$(canonical_plan "$path" | hash_text)"
+  [ "$stored" = "$actual" ] || die "notification plan changed after preview"
+}
+
+verify_live_plan() {
+  local path="$1"
+  local plan_session plan_mode expires now
+  plan_session="$(jq -r '.session_id' "$path")"
+  [ "$plan_session" = "$SESSION_ID" ] ||
+    die "notification approval belongs to another session"
+  plan_mode="$(jq -r '.mode' "$path")"
+  [ "$plan_mode" = "$MODE" ] ||
+    die "notification configuration changed; prepare it again"
+  expires="$(jq -r '.expires_at' "$path")"
+  now="$(date +%s)"
+  [ "$expires" -ge "$now" ] || die "notification plan expired; prepare it again"
+  verify_digest "$path"
+}
+
+write_plan() {
+  local plan_response="$1"
+  local kind="$2"
+  local recipient="$3"
+  local message="$4"
+  local id created expires path tmp
+  id="$(random_token | cut -c1-24)"
+  created="$(date +%s)"
+  expires="$(printf '%s' "$plan_response" | jq -r '.expires_at // empty')"
+  expires="${expires:-$((created + 600))}"
+  path="$(plan_path "$id")"
+  tmp="$path.tmp"
+
+  printf '%s' "$plan_response" | jq \
+    --arg id "$id" \
+    --arg session "$SESSION_ID" \
+    --arg mode "$MODE" \
+    --arg slug "$ORG_SLUG" \
+    --arg orgName "$ORG_NAME" \
+    --arg kind "$kind" \
+    --arg recipient "$recipient" \
+    --arg message "$message" \
+    --argjson created "$created" \
+    --argjson expires "$expires" \
+    '{
+      version: 1,
+      id: $id,
+      status: "proposed",
+      session_id: $session,
+      mode: $mode,
+      org_slug: (.org_slug // $slug),
+      org_name: (.org_name // $orgName),
+      kind: $kind,
+      recipient: (if $recipient == "" then null else $recipient end),
+      message: $message,
+      channels: (.channels // []),
+      deliveries: (.deliveries // []),
+      no_fallback: true,
+      created_at: $created,
+      expires_at: $expires,
+      server_plan_token: (.plan_token // ""),
+      digest: ""
+    }' > "$tmp"
+
+  local digest
+  digest="$(canonical_plan "$tmp" | hash_text)"
+  jq --arg digest "$digest" '.digest = $digest' "$tmp" > "$path"
+  rm -f "$tmp"
+  chmod 600 "$path" 2>/dev/null || true
+  jq '{
+    status: "approval_required",
+    plan_id: .id,
+    digest,
+    org: .org_name,
+    recipient,
+    channels,
+    deliveries,
+    no_fallback,
+    message,
+    expires_at
+  }' "$path"
+}
+
+# Channel-generic despite the name: reads any field from .egregore-state.json
+# with egregore.json as the legacy fallback (telegram_*, slack_*, …).
+read_local_telegram_config() {
+  local field="$1"
+  local state_file="$SCRIPT_DIR/.egregore-state.json"
+  local value
+  value="$(jq -r ".$field // empty" "$state_file" 2>/dev/null || true)"
+  [ -n "$value" ] ||
+    value="$(jq -r ".$field // empty" "$CONFIG" 2>/dev/null || true)"
+  printf '%s\n' "$value"
+}
+
+plan_connected() {
+  local kind="$1"
+  local recipient="$2"
+  local message="$3"
+  [ -n "$API_URL" ] && [ -n "$API_KEY" ] ||
+    die "notification service is not connected"
+
+  local response
+  response="$(curl -q -sS -X POST "${API_URL}/api/notify/plan" \
+    -H "Authorization: Bearer $API_KEY" \
+    -H "Content-Type: application/json" \
+    -d "$(jq -nc \
+      --arg kind "$kind" \
+      --arg to "$recipient" \
+      --arg message "$message" \
+      '{kind:$kind, message:$message}
+       + (if $to == "" then {} else {to:$to} end)')" \
+    --max-time 10)" || die "notification planning failed"
+
+  printf '%s' "$response" | jq -e '.status == "planned"' >/dev/null 2>&1 ||
+    die "$(printf '%s' "$response" | jq -r '.detail // "notification planning failed"' 2>/dev/null)"
+  write_plan "$response" "$kind" "$recipient" "$message"
+}
+
+plan_local() {
+  local kind="$1"
+  local recipient="$2"
+  local message="$3"
+  if [ "$kind" = "send" ]; then
+    die "direct messages are unavailable in local mode; no group fallback was sent"
+  fi
+
+  local chat_id group_link slack_channel deliveries
+  chat_id="$(read_local_telegram_config telegram_chat_id)"
+  group_link="$(read_local_telegram_config telegram_group_link)"
+  slack_channel="$(read_local_telegram_config slack_channel_id)"
+
+  deliveries="[]"
+  if [ -n "$chat_id" ] || [ -n "$group_link" ]; then
+    deliveries="$(printf '%s' "$deliveries" | jq -c \
+      --arg destination "${group_link:-$chat_id}" \
+      '. + [{channel:"telegram", destination:$destination, kind:"group"}]')"
+  fi
+  # Slack is local-direct (the org owns the app and token): plan it only when
+  # both halves of the config exist, so a half-configured Slack fails soft.
+  if [ -n "$slack_channel" ] && [ -n "${SLACK_BOT_TOKEN:-}" ]; then
+    deliveries="$(printf '%s' "$deliveries" | jq -c \
+      --arg destination "$slack_channel" \
+      '. + [{channel:"slack", destination:$destination, kind:"group"}]')"
+  fi
+  [ "$deliveries" != "[]" ] ||
+    die "no group notification channel is configured"
+
+  local response
+  response="$(jq -nc \
+    --arg slug "$ORG_SLUG" \
+    --arg org "$ORG_NAME" \
+    --argjson deliveries "$deliveries" \
+    '{
+      status:"planned",
+      org_slug:$slug,
+      org_name:$org,
+      channels:($deliveries | map(.channel)),
+      deliveries:$deliveries,
+      no_fallback:true
+    }')"
+  write_plan "$response" "$kind" "$recipient" "$message"
+}
+
+plan_notification() {
+  local kind="$1"
+  local recipient="$2"
+  local message="$3"
+  [ -n "$message" ] || die "notification message is empty"
+  case "$MODE" in
+    connected) plan_connected "$kind" "$recipient" "$message" ;;
+    local) plan_local "$kind" "$recipient" "$message" ;;
+    *) die "notifications are unavailable in this configuration" ;;
+  esac
+}
+
+approve_plan() {
+  local id="$1"
+  local supplied_digest="$2"
+  local confirmation="$3"
+  [ "$confirmation" = "APPROVE_EXACT_NOTIFICATION" ] ||
+    die "explicit notification confirmation is required"
+
+  local path status digest token token_hash tmp
+  path="$(read_plan "$id")"
+  verify_live_plan "$path"
+  status="$(jq -r '.status' "$path")"
+  [ "$status" = "proposed" ] || die "notification plan is not awaiting approval"
+  digest="$(jq -r '.digest' "$path")"
+  [ "$supplied_digest" = "$digest" ] ||
+    die "approval does not match the previewed notification"
+
+  token="$(random_token)"
+  token_hash="$(printf '%s' "$token" | hash_text)"
+  tmp="$path.tmp"
+  jq \
+    --arg tokenHash "$token_hash" \
+    --argjson approvedAt "$(date +%s)" \
+    '.status = "approved"
+     | .approval_token_hash = $tokenHash
+     | .approved_at = $approvedAt' "$path" > "$tmp"
+  mv "$tmp" "$path"
+  jq -nc --arg id "$id" --arg token "$token" \
+    '{status:"approved", plan_id:$id, approval_token:$token}'
+}
+
+approve_plan_to_file() (
+  local id="$1" digest="$2" confirmation="$3" out="$4"
+  local out_dir staging=''
+  cleanup_approval_file() {
+    local result=$?
+    [ -z "$staging" ] || rm -f -- "$staging"
+    if [ "$result" -ne 0 ]; then
+      rm -f -- "$out" 2>/dev/null || true
+    fi
+    return "$result"
+  }
+  trap cleanup_approval_file EXIT
+  trap 'exit 1' HUP INT TERM
+
+  out_dir="$(dirname -- "$out")"
+  if [ -z "$out" ] || [ -d "$out" ] || [[ "$out" == */ ]] \
+      || [ ! -d "$out_dir" ] || [ ! -w "$out_dir" ] || [ ! -x "$out_dir" ]; then
+    printf 'notify: cannot write --out %s\n' "$out" >&2
+    exit 1
+  fi
+  # Keep the credential private throughout publication, including replacement
+  # of an existing receipt. A failed approval never publishes its output.
+  staging="$(mktemp "$out_dir/.notify-approval.XXXXXX")"
+  chmod 600 "$staging"
+  approve_plan "$id" "$digest" "$confirmation" > "$staging"
+  mv -f -- "$staging" "$out"
+  jq -c '{status, plan_id}' "$out"
+)
+
+read_approval_token() {
+  local path="$1" mode token approval_json
+  if [ -f "$path" ] && [ -r "$path" ]; then
+    mode="$(stat -L -c %a "$path" 2>/dev/null)" ||
+      mode="$(stat -L -f %Lp "$path" 2>/dev/null)" || mode=''
+    # Check read bits too: privileged test runners can otherwise read mode 000.
+    if [[ "$mode" =~ ^[0-7]+$ ]] && (( (8#$mode & 0444) != 0 )) \
+        && approval_json="$(cat "$path" 2>/dev/null)"; then
+      scratch_consume "$path"
+      if token="$(printf '%s' "$approval_json" | jq -ser 'select(length == 1) | .[0]
+          | select(type == "object") | .approval_token
+          | select(type == "string" and length > 0)' 2>/dev/null)"; then
+        printf '%s\n' "$token"
+        return 0
+      fi
+    fi
+  fi
+  echo 'notify: approval file unreadable or has no approval_token' >&2
+  return 1
+}
+
+mark_plan() {
+  local path="$1"
+  local status="$2"
+  local detail="${3:-}"
+  local tmp="$path.tmp"
+  jq \
+    --arg status "$status" \
+    --arg detail "$detail" \
+    --argjson changedAt "$(date +%s)" \
+    '.status = $status
+     | .status_detail = (if $detail == "" then null else $detail end)
+     | .status_changed_at = $changedAt' "$path" > "$tmp"
+  mv "$tmp" "$path"
+}
+
+dispatch_connected() {
+  local path="$1"
+  local receipt="${2:-}"
+  local kind message plan_token response
+  kind="$(jq -r '.kind' "$path")"
+  message="$(jq -r '.message' "$path")"
+  plan_token="$(jq -r '.server_plan_token' "$path")"
+
+  if [ "$kind" = "send" ]; then
+    local recipient channel
+    recipient="$(jq -r '.recipient' "$path")"
+    channel="$(jq -r '.channels[0]' "$path")"
+    response="$(curl -q -sS -X POST "${API_URL}/api/notify/send" \
+      -H "Authorization: Bearer $API_KEY" \
+      -H "Content-Type: application/json" \
+      -d "$(jq -nc \
+        --arg to "$recipient" \
+        --arg message "$message" \
+        --arg channel "$channel" \
+        --arg planToken "$plan_token" \
+        '{to:$to,message:$message,channel:$channel,plan_token:$planToken}')" \
+      --max-time 10)" || return 1
+  else
+    local channels
+    channels="$(jq -c '.channels' "$path")"
+    response="$(curl -q -sS -X POST "${API_URL}/api/notify/group" \
+      -H "Authorization: Bearer $API_KEY" \
+      -H "Content-Type: application/json" \
+      -d "$(jq -nc \
+        --arg message "$message" \
+        --arg planToken "$plan_token" \
+        --argjson channels "$channels" \
+        '{message:$message,channels:$channels,plan_token:$planToken}')" \
+      --max-time 10)" || return 1
+  fi
+
+  printf '%s' "$response" | jq -e '.status == "sent"' >/dev/null 2>&1 || {
+    # Only the API's explicit plan-token rejection makes this receipt
+    # unusable. Transport failures and unrelated API errors are inconclusive.
+    if [ -n "$receipt" ] && printf '%s' "$response" | jq -e '
+      .detail | strings
+      | . == "invalid notification plan" or startswith("notification plan ")
+    ' >/dev/null 2>&1; then
+      rm -f -- "$receipt"
+    fi
+    printf '%s\n' "$response"
+    return 1
+  }
+  printf '%s\n' "$response"
+}
+
+dispatch_local_telegram() {
+  local destination="$1"
+  local message="$2"
+  local plan_slug="$3"
+  local plan_org="$4"
+  local chat_id group_link
+  case "$destination" in
+    https://t.me/*)
+      chat_id=""
+      group_link="$destination"
+      ;;
+    *)
+      chat_id="$destination"
+      group_link=""
+      ;;
+  esac
+  curl -q -sS -X POST "${RELAY_URL}/api/notify/relay" \
+    -H "Content-Type: application/json" \
+    -d "$(jq -nc \
+      --arg chat_id "$chat_id" \
+      --arg group_link "$group_link" \
+      --arg message "$message" \
+      --arg slug "$plan_slug" \
+      --arg org_name "$plan_org" \
+      '{chat_id:$chat_id,group_link:$group_link,message:$message,slug:$slug,org_name:$org_name}')" \
+    --max-time 10
+}
+
+# Local-direct: the org owns the Slack app and token, so the message goes
+# straight from this machine to Slack — never through the Egregore relay.
+dispatch_local_slack() {
+  local destination="$1"
+  local message="$2"
+  if [ -z "${SLACK_BOT_TOKEN:-}" ]; then
+    jq -nc '{status:"error",detail:"SLACK_BOT_TOKEN is missing from .env"}'
+    return 0
+  fi
+  local response
+  response="$(curl -q -sS -X POST "https://slack.com/api/chat.postMessage" \
+    -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+    -H "Content-Type: application/json; charset=utf-8" \
+    -d "$(jq -nc \
+      --arg channel "$destination" \
+      --arg text "$message" \
+      '{channel:$channel,text:$text,unfurl_links:false}')" \
+    --max-time 10)" || {
+    jq -nc '{status:"error",detail:"Slack request failed"}'
+    return 0
+  }
+  if printf '%s' "$response" | jq -e '.ok == true' >/dev/null 2>&1; then
+    jq -nc '{status:"sent"}'
+  else
+    jq -nc \
+      --arg detail "$(printf '%s' "$response" | jq -r '.error // "unknown"' 2>/dev/null || echo unknown)" \
+      '{status:"error",detail:$detail}'
+  fi
+}
+
+# The bearer header is written to curl's stdin, never to its argument vector,
+# so the workspace token stays out of the process table and any trace.
+slack_bearer_header() {
+  printf 'Authorization: Bearer %s\n' "${SLACK_BOT_TOKEN:-}"
+}
+
+# Credential probe for /slack-connect: proves the stored token and names the
+# workspace without sending a message. The token is read from .env by this
+# script; no caller and no model ever types it into a command.
+slack_auth_test() {
+  if [ -z "${SLACK_BOT_TOKEN:-}" ]; then
+    echo "notify: SLACK_BOT_TOKEN is missing from .env" >&2
+    return 2
+  fi
+  local response detail
+  response="$(slack_bearer_header | curl -q -sS \
+    -H @- \
+    --max-time 10 \
+    "https://slack.com/api/auth.test")" || {
+    echo "notify: slack auth.test request failed" >&2
+    return 1
+  }
+  # Only the three identity fields are published; the rest of the response,
+  # which can echo request material, is never printed.
+  if printf '%s' "$response" | jq -e '.ok == true' >/dev/null 2>&1; then
+    printf '%s' "$response" | jq -c '{ok:true,team:(.team // ""),user:(.user // "")}'
+    return 0
+  fi
+  detail="$(printf '%s' "$response" | jq -r '.error // empty' 2>/dev/null || true)"
+  [ -n "$detail" ] || detail="unknown"
+  echo "notify: slack auth.test rejected the stored token: $detail" >&2
+  return 1
+}
+
+dispatch_local() {
+  local path="$1"
+  local message plan_slug plan_org count i channel destination result
+  message="$(jq -r '.message' "$path")"
+  plan_slug="$(jq -r '.org_slug' "$path")"
+  plan_org="$(jq -r '.org_name' "$path")"
+  count="$(jq -r '.deliveries | length' "$path")"
+
+  # One platform failing must not mask another succeeding (mirror of the
+  # server-side send_group semantics).
+  local results="{}"
+  i=0
+  while [ "$i" -lt "$count" ]; do
+    channel="$(jq -r ".deliveries[$i].channel" "$path")"
+    destination="$(jq -r ".deliveries[$i].destination" "$path")"
+    case "$channel" in
+      telegram)
+        result="$(dispatch_local_telegram "$destination" "$message" "$plan_slug" "$plan_org")" ||
+          result='{"status":"error","detail":"relay request failed"}'
+        printf '%s' "$result" | jq -e . >/dev/null 2>&1 ||
+          result='{"status":"error","detail":"relay returned an unreadable response"}'
+        ;;
+      slack)
+        result="$(dispatch_local_slack "$destination" "$message")"
+        ;;
+      *)
+        result='{"status":"error","detail":"Unsupported channel"}'
+        ;;
+    esac
+    results="$(printf '%s' "$results" | jq -c --arg ch "$channel" --argjson r "$result" '. + {($ch): $r}')"
+    i=$((i + 1))
+  done
+
+  local sent
+  sent="$(printf '%s' "$results" | jq -c '[to_entries[] | select(.value.status == "sent") | .key]')"
+  if [ "$sent" = "[]" ]; then
+    printf '%s\n' "$results"
+    return 1
+  fi
+  printf '%s' "$results" | jq -c --argjson sent "$sent" \
+    '{status:"sent", platforms:$sent}
+     + ([to_entries[] | select(.value.status != "sent")] as $f
+        | if ($f | length) > 0
+          then {failed: ($f | map({(.key): (.value.detail // "unknown")}) | add)}
+          else {} end)'
+}
+
+dispatch_plan() {
+  local id="$1"
+  local approval_token="$2"
+  local receipt="${3:-}"
+  local path status expected_hash actual_hash lock response
+  path="$(read_plan "$id")"
+  verify_live_plan "$path"
+  status="$(jq -r '.status' "$path")"
+  [ "$status" = "approved" ] || die "notification plan has not been explicitly approved"
+  expected_hash="$(jq -r '.approval_token_hash' "$path")"
+  actual_hash="$(printf '%s' "$approval_token" | hash_text)"
+  [ "$expected_hash" = "$actual_hash" ] || die "notification approval token is invalid"
+
+  lock="$path.lock"
+  mkdir "$lock" 2>/dev/null || die "notification dispatch is already in progress"
+  NOTIFY_LOCK="$lock"
+  trap '[ -z "${NOTIFY_LOCK:-}" ] || rmdir "$NOTIFY_LOCK" 2>/dev/null || true' EXIT
+
+  # Consume approval before the network call. An uncertain failure requires a
+  # new plan rather than risking a duplicate external message.
+  mark_plan "$path" "dispatching"
+  if [ "$MODE" = "connected" ]; then
+    if ! response="$(dispatch_connected "$path" "$receipt")"; then
+      mark_plan "$path" "failed" "dispatch failed; prepare and approve a new plan"
+      die "notification dispatch failed; no fallback was attempted"
+    fi
+  else
+    if ! response="$(dispatch_local "$path")"; then
+      mark_plan "$path" "failed" "dispatch failed; prepare and approve a new plan"
+      die "notification dispatch failed; no fallback was attempted"
+    fi
+  fi
+
+  mark_plan "$path" "sent"
+  rmdir "$lock" 2>/dev/null || true
+  NOTIFY_LOCK=""
+  trap - EXIT
+  bash "$SCRIPT_DIR/bin/telemetry.sh" emit "notification" \
+    "$(jq -nc --arg kind "$(jq -r '.kind' "$path")" \
+      '{type:$kind,status:"sent",consent:"explicit"}')" 2>/dev/null &
+  jq -nc \
+    --arg id "$id" \
+    --argjson result "$response" \
+    '{status:"sent",plan_id:$id,result:$result}'
+}
+
+dispatch_approval_file() (
+  local id="$1" receipt="$2" approval_token
+  approval_token="$(read_approval_token "$receipt")" || exit 1
+  dispatch_plan "$id" "$approval_token" "$receipt"
+)
+
+show_plan() {
+  local path
+  path="$(read_plan "$1")"
+  jq '{
+    status,
+    plan_id:.id,
+    digest,
+    org:.org_name,
+    recipient,
+    channels,
+    deliveries,
+    no_fallback,
+    message,
+    expires_at
+  }' "$path"
+}
+
+cancel_plan() {
+  local path status
+  path="$(read_plan "$1")"
+  status="$(jq -r '.status' "$path")"
+  case "$status" in
+    proposed|approved|failed) mark_plan "$path" "cancelled" ;;
+    *) die "notification plan cannot be cancelled from status: $status" ;;
+  esac
+  jq -nc --arg id "$1" '{status:"cancelled",plan_id:$id}'
+}
+
+list_pending() {
+  local found="false"
+  for path in "$STATE_DIR"/*.json; do
+    [ -f "$path" ] || continue
+    if jq -e '.status == "proposed" or .status == "approved"' "$path" >/dev/null 2>&1; then
+      jq -c '{plan_id:.id,status,org:.org_name,recipient,channels,message,expires_at}' "$path"
+      found="true"
+    fi
+  done
+  [ "$found" = "true" ] || echo '{"status":"empty"}'
+}
+
+test_connection() {
+  if [ "$MODE" = "connected" ]; then
+    [ -n "$API_URL" ] && [ -n "$API_KEY" ] ||
+      die "notification service is not connected"
+    curl -q -sS -X GET "${API_URL}/api/notify/test" \
+      -H "Authorization: Bearer $API_KEY" \
+      --max-time 10
+  elif [ "$MODE" = "local" ]; then
+    local group_link slack_channel
+    group_link="$(read_local_telegram_config telegram_group_link)"
+    slack_channel="$(read_local_telegram_config slack_channel_id)"
+    if [ -n "$group_link" ] ||
+       { [ -n "$slack_channel" ] && [ -n "${SLACK_BOT_TOKEN:-}" ]; }; then
+      echo '{"status":"configured","mode":"local"}'
+    else
+      echo '{"status":"offline","reason":"no_notification_channel"}'
+    fi
+  else
+    echo '{"status":"offline","reason":"no_api_key"}'
+  fi
+}
+
+case "${1:-help}" in
+  plan)
+    case "${2:-}" in
+      send)
+        [ "$#" -eq 4 ] || die "Usage: notify.sh plan send <recipient> <message>"
+        plan_notification "send" "$3" "$4"
+        ;;
+      group)
+        [ "$#" -eq 3 ] || die "Usage: notify.sh plan group <message>"
+        plan_notification "group" "" "$3"
+        ;;
+      *) die "Usage: notify.sh plan send|group ..." ;;
+    esac
+    ;;
+  approve)
+    if [ "$#" -eq 6 ] && [ "$5" = "--out" ]; then
+      approve_plan_to_file "$2" "$3" "$4" "$6"
+    elif [ "$#" -eq 4 ]; then
+      approve_plan "$2" "$3" "$4"
+    else
+      die "Usage: notify.sh approve <plan-id> <digest> APPROVE_EXACT_NOTIFICATION [--out <file>]"
+    fi
+    ;;
+  dispatch)
+    if [ "$#" -eq 4 ] && [ "$3" = "--approval-file" ]; then
+      dispatch_approval_file "$2" "$4"
+    elif [ "$#" -eq 3 ] && [ "$3" != "--approval-file" ]; then
+      dispatch_plan "$2" "$3"
+    else
+      die "Usage: notify.sh dispatch <plan-id> <approval-token>|--approval-file <file>"
+    fi
+    ;;
+  show)
+    [ "$#" -eq 2 ] || die "Usage: notify.sh show <plan-id>"
+    show_plan "$2"
+    ;;
+  cancel)
+    [ "$#" -eq 2 ] || die "Usage: notify.sh cancel <plan-id>"
+    cancel_plan "$2"
+    ;;
+  pending)
+    list_pending
+    ;;
+  send)
+    [ "$#" -eq 3 ] || die "Usage: notify.sh send <recipient> <message>"
+    plan_notification "send" "$2" "$3"
+    echo "Approval required — no notification was sent." >&2
+    exit 4
+    ;;
+  group)
+    [ "$#" -eq 2 ] || die "Usage: notify.sh group <message>"
+    plan_notification "group" "" "$2"
+    echo "Approval required — no notification was sent." >&2
+    exit 4
+    ;;
+  test)
+    test_connection
+    ;;
+  slack-auth-test)
+    [ "$#" -eq 1 ] || die "Usage: notify.sh slack-auth-test"
+    slack_auth_test
+    ;;
+  help|*)
+    echo "Usage: notify.sh <command>"
+    echo ""
+    echo "Commands:"
+    echo "  plan send <name> <message>  Resolve a DM without sending"
+    echo "  plan group <message>        Resolve group channels without sending"
+    echo "  approve <id> <digest> APPROVE_EXACT_NOTIFICATION [--out <file>]"
+    echo "                              Record one exact human approval"
+    echo "  dispatch <id> <token>|--approval-file <file>"
+    echo "                              Consume approval and send stored content"
+    echo "  show <id>                   Show exact pending content"
+    echo "  cancel <id>                 Cancel a pending plan"
+    echo "  pending                     List pending plans"
+    echo "  test                        Test configuration without sending"
+    echo "  slack-auth-test             Prove the stored Slack token without sending"
+    ;;
+esac

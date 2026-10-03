@@ -1,0 +1,546 @@
+# Harvest — Audit & Rebuild Spec
+
+> Harvest is a general elicitation primitive. It helps an agent ask better
+> situated questions and turn the answers into organizationally usable context.
+> It is not a survey engine, not a Spiral subroutine, and not a fixed
+> interview template.
+
+This document is the persistent design contract for `/harvest`. It was
+written as the input that drove the rebuild of `.claude/skills/harvest/SKILL.md`
+and the authoring of the sibling docs `PROCESS.md` and `FORMAT.md` — and now
+continues to serve as the spec they implement. §13 is the historical record
+of the rollout that landed this layout; the rest of the document is current.
+
+---
+
+## 1. Status before the rebuild
+
+(Snapshot of the pre-rebuild state, kept here as the audit findings this
+document was written to address. The rebuild — split into PROCESS.md /
+FORMAT.md / a thin SKILL.md — landed alongside this audit.)
+
+**Pre-rebuild file**: `.claude/skills/harvest/SKILL.md` (145 lines).
+- Procedural Steps 0–6 with graph plumbing
+- Connected-mode ops wired: `create-harvest`, `create-harvest-session`,
+  `record-harvest-turn`, `complete-harvest` (all in `bin/graph-op.sh`)
+- Step 4 said "Apply `skills/harvest/SKILL.md` from here" — but that path
+  resolved back to the same file. There was no separate cognitive layer; the
+  reference was recursive/self-referential. The file existed; the intended
+  layer did not. PROCESS.md / FORMAT.md now provide that layer.
+
+**Reference material (not a port target)**:
+The prior harvest spec drafted in the spiral-skill workspace (215 lines)
+had drifted toward claim-stress-testing objectives that don't belong in
+harvest. We do **not** port it wholesale. We extract only the six reusable
+elicitation moves it documents well:
+
+- seed context
+- generate situated questions
+- evaluate answers
+- checkpoint
+- cascade carefully
+- synthesize with evidence
+
+Everything else — including any framing about "taking a stance,"
+"recommending a direction," or treating divergence as something to be
+resolved — belongs to Spiral, not Harvest. `PROCESS.md` is authored fresh
+from this `AUDIT.md`, with the old spec consulted only as a craft library
+for the six moves above.
+
+**Aspirational outputs (gold fixtures)**:
+- `memory/knowledge/harvests/2026-03-23-olivier-harvest-analysis.md`
+- `memory/knowledge/harvests/2026-03-23-egregore-collective-intelligence-uniqueness.md`
+- `memory/handoffs/2026-05/06-cem-harvest-oz-canvas-tech-and-capabilities.md`
+
+These already exemplify the layered output shape (quote ▸ context ▸ reflection
+▸ pattern ▸ action). The product knows what good looks like; the work is
+making the command reliably reproduce it without the operator carrying the
+form.
+
+---
+
+## 2. Primitive boundary
+
+| Primitive | Core move | Input | Output |
+|---|---|---|---|
+| **Harvest** | Elicit latent human/agent context | task + roles + seed context | positions, preferences, tensions, quotes, decision surfaces |
+| **Spiral** | Stress-test a claim | claim + context | refined claim, objections, surviving structure |
+
+Spiral can consume harvest output or trigger a harvest. Harvest is broader:
+context, preference, position, domain knowledge, alignment, stakeholder
+needs, design taste, team memory. Spiral is pressure-testing claims. Harvest
+is eliciting what people know, prefer, feel tension around, or are implicitly
+carrying.
+
+**Term hygiene.** Outside this section, `PROCESS.md`, `FORMAT.md`, and
+`SKILL.md` should not use Spiral vocabulary — *claim*, *stress-test*,
+*objection*, *survives critique*, *recommend a direction*, *take a stance*.
+A short boundary section in `PROCESS.md` may name Spiral once to mark the
+boundary; everywhere else, harvest stays in its own register: elicit,
+preserve, situate, surface, interpret-with-evidence.
+
+**What harvest is not**: a survey, a retrospective form, a performance
+review, a structured-field data collector, a replacement for conversation,
+a Spiral subroutine.
+
+---
+
+## 3. First-class design constraints
+
+### 3.1 Model-led, not flowchart-led
+
+> The model owns the next question. The protocol only requires that it can
+> explain why the question is being asked, preserve the answer, and update
+> its interpretation.
+
+The spec defines invariants, affordances, and failure modes — not a rigid
+interview script. There is no fixed round count, no fixed question count
+per round, no required dimensions to cover. The model reads the situation,
+generates the next question with an articulable purpose, evaluates the
+answer, and decides whether to deepen, pivot, checkpoint, cascade, or
+synthesize.
+
+### 3.2 Primitive-level, not Spiral-specific
+
+Harvest is the elicitation primitive. Anything that needs latent human or
+agent context — onboarding, alignment, decision crystallization, knowledge
+extraction, retrospective — can call harvest. Spiral, `/quest`, `/reflect`,
+and `/onboarding` may consume harvest output. Harvest does not depend on any
+of them.
+
+### 3.3 Invariants
+
+Normative in `PROCESS.md` §2 (five invariants: no hidden role
+stereotyping · no survey collapse · no unmarked cascade contamination ·
+no synthesis without evidence · articulable `questionIntent` per
+question). This document does not restate them; the original audit text
+lives in git history.
+
+### 3.4 Anti-conflation test
+
+Normative in `PROCESS.md` §8 (the four fixtures every protocol rule
+must pass). Not restated here.
+
+### 3.5 Failure modes to design against
+
+| Failure mode | What it looks like | Mitigation |
+|---|---|---|
+| **Survey collapse** | Structured-question options bias answers; nuance flattens to picked labels | Options drawn from context; freeform escape hatch always; questions can be open-ended where structured choices would constrain |
+| **Role calcification** | Inferred role becomes stereotype; respondent can't see or correct it | RoleSheet shows evidence + confidence; low-confidence inferences are surfaced into the question itself |
+| **Cascade contamination** | Later respondents over-shaped by earlier ones | Disclosure mode (blind/disclosed/comparative) is chosen per harvest, recorded on the manifest, and visible to respondents |
+| **Script drift** | Protocol becomes a flowchart the model rotely executes | Invariants over procedure; `questionIntent` is mandatory and reviewed; round count and shape are model decisions |
+
+---
+
+## 4. Architecture
+
+Five artifacts under `.claude/skills/harvest/`:
+
+1. **`SKILL.md`** — entry point. Orchestration only: parse args, detect
+   mode, create IDs, load the sibling contracts, persist state, exit.
+   No cognitive logic.
+2. **`PROCESS.md`** — the cognitive protocol. Authored fresh from
+   `AUDIT.md`; consult the old harvest spec only for the six reusable
+   elicitation moves (seed, generate, evaluate, checkpoint, cascade,
+   synthesize). Covers role asymmetry, question round protocol, async bridge,
+   and resume.
+3. **`QUESTION_PALETTE.md`** — the canonical intent → question move →
+   answer shape rubric, conversational-move definitions, and hard bans.
+   PROCESS, FORMAT, SKILL, and scroll point here instead of restating it.
+4. **`FORMAT.md`** — the synthesis grammar. Layered disclosure rules,
+   synthesis blocks, generative emission policy.
+5. **Memory contract** — documented markdown shape for manifest, session,
+   turn, async question, and synthesis files. Lives in this document
+   (§9–§10); not a separate doc.
+
+The current SKILL.md's recursive self-reference ("intelligence lives in
+skills/harvest/SKILL.md") is the first thing to remove.
+
+---
+
+## 5. Three-column model: Guidance · Tooling · Discretion
+
+Frame the rebuild not as procedure but as the relationship between what the
+spec *prescribes*, what the system *provides*, and what the model *decides*.
+
+| Guidance (model reads, qualitative) | Tooling (system provides, concrete) | Discretion (model decides) |
+|---|---|---|
+| Role asymmetry — sender vs. receiver | RoleSheet schema and resolution helpers | How much context to include with each question |
+| Anti-bias — when to disclose, when to withhold | Ask with a structured question when available and permitted in this session; otherwise ask in plain text (1 interaction/round, headers ≤12 chars when available and permitted in this session) | Round count; question count per round |
+| Cascade disclosure choices | `questionIntent` + `evaluation` recorded per turn | Disclosure setting (`context_mode`: blind/disclosed/comparative) |
+| Synthesis grammar (layers + blocks) | Async question metadata (`harvest_id`, `harvest_session_id`, `turn`, `context_mode`, `status`) | Which synthesis layers and blocks to emit |
+| Failure mode awareness | Markdown/session state (local mode), graph nodes (connected mode) | When to checkpoint, deepen, pivot, synthesize |
+
+---
+
+## 6. RoleSheet — sender/receiver asymmetry
+
+Question generation takes both sheets as input, not just the receiver's.
+Self-harvest is the degenerate case where sender == receiver.
+
+```
+RoleSheet {
+  handle:           string         # e.g. "renc"
+  explicit_role:    string?        # from memory/people/{handle}.md frontmatter
+  explicit_focus:   string?        # declared current focus / domain
+  recent_threads:   [string]       # last-N session topics, quest names
+  likely_lenses:    [string]       # inferred analytical orientations
+  evidence:         [string]       # paths/quotes that justify each inference
+  confidence:       low|med|high   # per implicit field
+}
+```
+
+**Resolution**:
+- *Explicit*: read `memory/people/{handle}.md` frontmatter and prose.
+- *Implicit*: read recent handoffs/sessions/quests where this person
+  appears. Local mode reads files; connected mode queries the graph.
+
+**Surfacing into the interaction (anti-calcification)**:
+- High confidence: the inference shapes the question silently.
+- Low/medium confidence: surface the inference into the question itself —
+  *"I'm reading you as approaching this from the eng-lead lens — push back
+  if that's wrong."* Respondent can correct in one turn.
+
+**Generation input** (per turn):
+```
+generate_question({
+  sender:        SenderSheet,
+  receiver:      ReceiverSheet,
+  task:          string,
+  intent:        string,
+  seed:          [Document],
+  prior_turns:   [Turn],
+  open_threads:  [string],
+})
+```
+
+The vector matters. `cem-asks-renc-about-pricing` ≠
+`renc-asks-cem-about-pricing`. The asymmetry is what lets harvest produce
+*situated* questions instead of generic ones.
+
+---
+
+## 7. Question round protocol
+
+Normative in `PROCESS.md` §3.2 (round shape, forbidden-in-round-1,
+always-permitted) and §3.3 (evaluation vocabulary). Not restated here.
+The unique tooling fact this document owns: the graph supports
+`questionIntent` and `evaluation` on `HarvestTurn` (the
+`record-harvest-turn` op in `bin/graph-op.sh`). We use what's there.
+
+---
+
+## 8. Synthesis
+
+> **A harvest maps the choices; it need not make them.**
+
+Normative in `FORMAT.md`: the four layers (§2), the six synthesis
+blocks (§3), generative emission (§4), and `/reflect`-able linkability
+(§8). Not restated here.
+
+---
+
+## 9. Async bridge — extending `/ask` for harvest re-entry
+
+Async harvest doesn't just "deliver via `/ask`." When a respondent isn't
+present, harvest emits a question file using `/ask`'s existing markdown
+shape, *plus* harvest metadata so the answer re-enters the right harvest:
+
+```yaml
+---
+from:                cem
+to:                  renc
+topic:               pricing
+status:              pending      # pending | answered | incorporated
+date:                2026-05-07
+
+harvest_id:          harvest-2026-05-07-pricing
+harvest_session_id:  harvest-2026-05-07-pricing-renc
+turn:                3
+question_intent:     "Renc's stance on free-tier ceiling vs. wedge"
+context_mode:        disclosed    # blind | disclosed | comparative
+---
+
+## Questions
+
+1. [Wedge] {generated text}
+2. [Ceiling] {generated text}
+```
+
+`bin/agent.sh ask` originally wrote only `from / to / topic / status /
+created` (the `ask` writer in `bin/agent.sh`). It has been extended (or
+`/harvest` writes harvest-flavored question files directly) so the async
+bridge is re-entrant.
+
+When the respondent answers via `/ask`, the answers append to the file and
+status moves `pending → answered`. The next time `/harvest` runs and finds
+its session has `answered` files, it incorporates them, sets status to
+`incorporated`, and continues toward synthesis.
+
+**Async initial state**: `create-harvest-session` (in `bin/graph-op.sh`)
+accepts an optional 4th `[status]` argument validated against
+`pending|active|answered|complete|incorporated` — **this five-value enum
+is the canonical HarvestSession status set**; every other mention cites
+it. (The question *file's* frontmatter `status` is a different, smaller
+enum: `pending|answered|incorporated`.) Async respondents are created
+with `pending` and transition to `active` when they engage; default
+remains `active` for back-compat with synchronous callers.
+
+---
+
+## 10. Local-mode contract
+
+Local mode never references graph failures. It writes durable markdown.
+
+```
+memory/knowledge/harvests/{date}-{slug}/
+  manifest.md             # harvest-level: id, topic, intent, initiator,
+                          # respondents, disclosure_mode, status
+  sessions/
+    {handle}.md           # per-respondent: turns inline, frontmatter status
+  synthesis.md            # the layered output (L0..L3)
+```
+
+For single-session harvests (the common case), the existing flat file at
+`memory/knowledge/harvests/{date}-{slug}.md` remains valid — it collapses
+manifest + session + synthesis into one. The directory shape is opt-in for
+multi-respondent harvests.
+
+`/ask`'s local-mode pattern (in `.claude/skills/ask/SKILL.md`) is the
+model to follow: clear local/connected split, no graph-failure messaging
+in local mode, durable markdown is the source of truth.
+
+---
+
+## 11. Resume protocol
+
+Normative in `PROCESS.md` §7. Session status uses the §9 enum
+(`pending | active | answered | complete | incorporated`). The harvest
+is `complete` only when synthesis is written and linked.
+
+---
+
+## 12. Eval fixtures
+
+Pin two harvests as gold:
+
+1. `memory/knowledge/harvests/2026-03-23-olivier-harvest-analysis.md`
+2. `memory/handoffs/2026-05/06-cem-harvest-oz-canvas-tech-and-capabilities.md`
+
+Regeneration must reproduce, given the same intent + RoleSheets + seed:
+
+- L0 portrait present, single sentence, names the sharpest finding
+- ≥3 named patterns (knowledge / action / antipattern) where the source
+  fixture has them
+- Direct quotes attributed by handle
+- L1 surface populated when divergence or convergence existed; absent
+  cleanly when the harvest was pure preference / context
+- No leading questions in round 1 (check `questionIntent` log)
+- Every L2 assertion traces to a recorded turn or marked seed
+
+These are not unit tests. They are reference outputs the rebuild is judged
+against. If the regenerated artifact fails any of these, the rebuild isn't
+done.
+
+---
+
+## 13. Rollout (historical record)
+
+The order in which the rebuild landed. Steps 1–7 shipped together; step 8
+remains as the empirical proof the rebuild reproduces the gold fixtures.
+
+1. ✓ Land this `AUDIT.md`.
+2. ✓ Rewrite `.claude/skills/harvest/SKILL.md` as a real entry point. Move
+   cognitive content out.
+3. ✓ **Author `PROCESS.md` fresh from this `AUDIT.md`.** Did not port the
+   prior spiral-context harvest spec wholesale. Used it only as a craft
+   library for the six reusable moves (seed, generate, evaluate,
+   checkpoint, cascade, synthesize). Every protocol rule was run through
+   the §3.4 anti-conflation test before keeping it. Spiral vocabulary
+   stripped except in a short boundary section.
+4. ✓ Write `FORMAT.md` from §8 using Olivier + Oz harvests as fixtures.
+5. ✓ Document the local-mode markdown contract (§10, this document —
+   `PROCESS.md` §9 points here).
+6. ✓ `bin/graph-op.sh create-harvest-session` accepts an optional
+   `[status]` argument with enum validation (§9).
+7. ✓ `bin/agent.sh ask` extended with harvest-flavored frontmatter
+   fields per §9 (`--harvest-id`, `--harvest-session-id`, `--turn`,
+   `--question-intent`, `--context-mode`).
+8. Run regeneration against fixtures (§12). Iterate until all pass.
+
+The Olivier and Oz harvests are the bar. The product already knows what
+good looks like; the rebuild is making the command reliably reproduce it
+without the operator carrying the form.
+
+---
+
+## 14. Decision surface — rendered mode + round-trip
+
+The `choice` block (`FORMAT.md` §3) gained a **rendered, fillable
+form** — the *decision surface*. `/harvest` is the only command: when its findings are decision-shaped, it
+renders them as a *decision surface* — the rendered format/artifact the respondent
+decides on and pastes back. *Decision surface* names the **format**, not a command;
+there is no `/decision-surface` command (everything merges into `/harvest` — one
+verb, one grammar).
+
+**Resolution** — matches the original directed-vs-self intent:
+- Invoked on yourself (no `--to`) → **self-harvest**, rendered: surface your own
+  decisions, fill, paste back into the session.
+- Sent to someone (`--to <name>`) → **directed harvest**: render + deliver; their
+  filled-in choices return as the answer.
+
+### Renderer
+
+`decision-surface` is a first-class artifact type in `packages/egregore-artifacts`
+(`lib/parsers/decision-surface.js`, `lib/templates/decision-surface.js`, registered
+in `lib/index.js`; `decision-surface` added to `bin/cli.js` known types). It renders
+the data model — `decisions[] → {id, title, context, mode, max, ends, section,
+options[{key, label, visual, tradeoffs[{t,text}], recommended}]}` — as an
+interactive surface: option cards, a structural visual per option, honest `+/−`
+tradeoffs, at most one recommendation, selection state, a progress bar, and a
+copy-back button.
+
+**Answer modes (canonical):** `mode ∈ single | multi | rank | weight | spectrum`,
+per card. Absent or unknown ⇒ `single` (backward compatibility only — new surfaces
+declare a mode explicitly; see SKILL.md's mode table for selection guidance).
+Mode-specific fields: `max` (multi — optional selection cap), `ends` (spectrum —
+the two labeled poles, `["left","right"]`). **Grouping:** optional top-level
+`sections: [{id, label, desc}]` plus `section: "<id>"` per decision renders a
+category rail; additive — surfaces without it render flat, unchanged. Locked to the **meridian**
+palette by the design-system route. Styled with **role tokens only** (`--t1` decided,
+`--t2` plus, `--t3` minus, `--ink/--paper/--line/--card`) — dark-mode-safe, no
+resolved hex. The output is fully self-contained (CSS + behavior inlined): fillable
+from a file, a published URL, or embedded in an emissary, with **no egregore runtime
+needed to fill it** — only to absorb.
+
+### Round-trip — the return contract
+
+The paste-back block is the **transport-agnostic return contract**:
+
+```
+#{slug}-decisions:v1
+surface: {surface_id}
+harvest: {harvest_id}      # directed surfaces only — re-keys to the HarvestSession
+source: {source}
+date: {YYYY-MM-DD}
+
+Q1 {decision-id}: {option-key}  ("{label}")
+   note: {reasoning}
+Q2 {decision-id}: UNDECIDED
+Q3 {decision-id}: [{key-a}, {key-b}]  ("{Label A}" + "{Label B}")   # multi
+Q4 {decision-id}: {key-a} > {key-c} > {key-b}                      # rank
+Q5 {decision-id}: {position}  ({left-pole}→{right-pole})           # spectrum
+Q6 {decision-id}: {key-a}:60 {key-b}:40                            # weight
+```
+
+Each answer mode emits its own Q-line shape (above); `UNDECIDED` and the
+indented `note:` are valid under every mode.
+
+This is the same shape already in field use (`#…-decisions:v1`). It self-identifies
+the surface/harvest it answers, so it re-keys deterministically over *any* channel.
+On `--resume`: re-key, record each choice as a `HarvestTurn` answer (`note` = the
+rationale), apply resolved decisions to `source`, log to
+`memory/knowledge/decisions/` if others will build on them, synthesize. `UNDECIDED`
+stays open — never forced.
+
+### Absorb & review (canonical)
+
+This is the single canonical statement of the rendered-surface absorb
+machine. `SKILL.md` points here; scrolls carry their own version of the
+same machine in `.claude/skills/scroll/SKILL.md` §5–§6 (shared event
+grammar, separate stores).
+
+Rendered decision surfaces have the same durable review substrate as
+scrolls. Store the surface's data model next to `source` with optional
+`"author": "<person-slug>"` and `"trusted": ["<person-slug>", …]`;
+legacy surfaces without `author` are backfilled from unambiguous
+artifact/source authorship, otherwise ask once and write it — never
+silently default open. Append events to
+`memory/harvests/.events/<surface-slug>.jsonl` (the runtime events root,
+sibling of scrolls' `memory/scrolls/.events/` — synthesis artifacts live
+separately under `memory/knowledge/harvests/`) using the same event
+grammar as scrolls: `turn-received`, `turn-reviewed`, and
+surface-specific `turn-applied` (there is no `version-published` for
+surfaces). A `turn-received` may carry optional
+`submitted_by: <person-slug>` event-log metadata recorded only on that
+event from the session person doing the paste; it is never projected
+into the ledger or return block and is not part of the history
+return-block grammar. Event ids are `turn.id`, `review|<turn.id>`, and
+`applied|<turn.id>` respectively.
+
+Re-key the pasted return block by `surface`/`harvest` and create its
+`turn-received` event. Derive the paster from the session person doing
+the paste, not the return block's self-declared `respondent:`
+attribution. If the paster is the `author` or in `trusted`, continue the
+existing apply flow. Otherwise append the pending turn, do **not** apply
+decisions to `source` or log to `memory/knowledge/decisions/`, notify
+the author via `bash bin/notify.sh` in connected mode or an addressed
+handoff in local mode, and stop. The notification names the surface,
+paster, digest, and the same accept / decline-with-required-reason /
+synthesize dispositions; the contributor may also send the acknowledged
+artifact link directly.
+
+The author disposes in agent chat with the same protocol as scrolls:
+accept, decline with a nonblank attributed note, per-answer overrides,
+or synthesize all pending turns and approve the proposal. Append each
+`turn-reviewed` before applying anything. The hybrid rule is identical:
+top-level disposition defaults, `answers` overrides per fork, any
+effective accepted answer is absorbable, a zero-answer turn takes the
+top-level disposition as its effective disposition, zero is a plain
+decline, and a note is required for every effective decline.
+Accepted-but-unapplied turns remain pending and are retryable.
+
+For every successful application — whether it follows an accepted review
+or a direct author/trusted apply — apply resolved decisions to `source`,
+log to `memory/knowledge/decisions/` if others will build on them, and
+only **after both steps complete** append `turn-applied` with
+`{ "id":"applied|<turn.id>", "type":"turn-applied", "turn":"<turn.id>",
+"date":"…", "targets":["<paths written>"] }`. Before re-applying an
+accepted turn, check the targets for its turn id (decision records name
+the turn id) and skip targets already written for that id; this keeps
+retries idempotent. The surface remains pending until `turn-applied`; a
+declined review is the only review projection that clears it without
+application. Then synthesize. `UNDECIDED` lines stay open — never force
+a pick.
+
+### Two transports — one payload
+
+| Transport | For | Status |
+|---|---|---|
+| **Copy-back → harvest channel** | egregore users, local-first | **Built.** Block returns via `/ask`→`/answer`→`/harvest --resume`. Works offline; no server. |
+| **Emissary respond (`kind: decision`)** | people **without** egregore who want to pass surfaces back and forth | **Designed, not built.** Carries the *identical* paste-back payload as an emissary response (`packages/egregore-emissary` `respond`, threaded via `parents`). Because the surface and the return contract are transport-agnostic, this is a delivery/return swap — **no renderer rework**. |
+
+**Invariant — transport-neutral:** the renderer and the return contract must stay
+transport-neutral. A change that couples the surface or the paste-back block to the
+harvest channel specifically (rather than to the abstract "selections + notes,
+re-keyed by surface/harvest") breaks the deferred emissary path and must be rejected.
+
+**Invariant — no author markup:** a directed surface is published and sent to other
+people, so the renderer must never inject author-supplied HTML/SVG. Visuals use a
+closed, structured schema (`mono` token spans, `badges`, `diagram` primitives)
+rendered as escaped React elements with allowlisted tones — no `dangerouslySetInnerHTML`
+for any data-derived content. The only `dangerouslySetInnerHTML` permitted is the
+static CSS/behavior strings and the config object (`JSON.stringify`, with every
+`<` escaped to its unicode form so a malicious value can't break out of the
+`</script>` tag), whose values are only ever written back via `textContent`.
+Re-introducing a raw-HTML/SVG visual path is a security regression and must be
+rejected.
+
+### Rollout (this change)
+
+1. ✓ `decision-surface` renderer added to `packages/egregore-artifacts` (parser,
+   template, index + CLI registration), role-token / dark-mode-safe, meridian-locked.
+2. ✓ Verified end-to-end (object + JSON-file + markdown-embedded paths) and
+   screenshotted in light + dark.
+3. ✓ Rendered-surface mode folded into `/harvest` SKILL.md (the only command;
+   `decision surface` is the rendered format, not a command — no
+   `/decision-surface` command).
+4. ✓ `SKILL.md` + `FORMAT.md` updated: rendered mode, absorb-on-resume,
+   strategic surface-design guidance, `choice` block promoted to a
+   rendered form.
+5. ◻ **Deferred:** emissary `kind: decision` + `respond` extension for the
+   non-egregore transport.
+6. ◻ **Deferred:** publish `egregore-artifacts` with the new type so
+   `npx egregore-artifacts decision-surface` resolves (prototype renders via the
+   local package). This is a framework change — land it via `/contribute`, not a
+   local edit, before relying on the published path.

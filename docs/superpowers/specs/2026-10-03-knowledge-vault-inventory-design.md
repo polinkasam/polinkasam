@@ -138,6 +138,26 @@ bundle, dependency on browser-only APIs (speech recognition, Web Audio),
 Capacitor or PWA fit. Output goes into the **Store path** section. No code
 changes.
 
+### Step 3b — catalog the backend schemas built so far
+
+pali has designed several relational backends and wants them internalized
+so every future backend improvement starts from a working pattern rather
+than from zero. Write `memory/knowledge/patterns/relational-schema-kit.md`
+cataloguing each schema with: tables, keys, what it powered, what worked,
+what broke, and where the source lives.
+
+| Schema | Source | Notes |
+|---|---|---|
+| Circe 12-table operations schema | `~/Desktop/CLs/FIN/Circe.xlsx`, Grant World config | companies, accounts, entities, people, projects, assets, transactions, products, IP, grants, milestones, contracts |
+| Finance Dashboard Prisma schema | `apps/finance-dashboard/repos/lexware-finance-dashboard/prisma` | UI is strong; the external API integrations did not work. Record which ones and why |
+| Saint Suaire Supabase schema | `apps/arcana-echo/repos/arcana-echo/supabase-schema.sql` | auth + user data |
+| Leira Supabase schema | `apps/layra/repos/leira/supabase/schema.sql` | library persistence |
+| Watch My Dreams Neo4j model | `apps/watch-my-dreams` | multi-agent pipeline |
+| Pixelhausen dashboard schema | walled instance | pali describes it; not read |
+
+This step is inventory only. Turning the catalog into a reusable backend
+kit is follow-up spec D.
+
 ### Step 4 — people and networks interview
 
 Structured questions (AskUserQuestion, 2–4 per batch) producing
@@ -173,6 +193,11 @@ Each of these gets its own brainstorm → spec → plan:
   TestFlight, listings, pricing.
 - **C. Shared design system** — tokens and components reused across Saint
   Suaire, Leira, Cadence, KidyTalk and the website.
+- **D. Reusable backend kit** — one working relational backend pattern
+  (schema, migrations, query layer, graph view like Circe's system map)
+  distilled from the catalog in Step 3b, so a new dashboard backend is
+  assembled rather than rebuilt. Also the path to repair the finance
+  dashboard's integrations.
 
 ## Constraints
 
@@ -197,6 +222,16 @@ Each of these gets its own brainstorm → spec → plan:
   shows `polinkasam/palina-portfolio`.
 - pali reads at least the six alive-app files and corrects them before the
   handoff.
+
+## Open threads
+
+- Friends want a meeting about the dashboards, including the one pali is
+  building for Pixelhausen. The inventory and the schema catalog (Step 3b)
+  are the material for that meeting. Date not set.
+- Finance Dashboard: the interface and finance assets are good; the
+  external API integrations never worked. Step 2 records exactly which.
+- Pixelhausen dashboard is company property built on pali's earlier
+  product. The pattern is pali's; the instance is theirs.
 
 ## Risks
 

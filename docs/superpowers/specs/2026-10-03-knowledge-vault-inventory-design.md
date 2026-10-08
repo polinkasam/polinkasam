@@ -1,7 +1,7 @@
 # Knowledge Vault Inventory — Design
 
 Date: 2026-10-03
-Status: draft for review
+Status: approved by pali on 2026-10-08
 Owner: pali (polinkasam)
 
 ## Purpose

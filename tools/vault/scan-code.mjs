@@ -109,7 +109,11 @@ export async function scanFolders({ roots, walled }) {
       out.push(record(folder));
       return;
     }
-    if (depth >= MAX_DEPTH) return;
+    if (depth >= MAX_DEPTH) {
+      // Deep enough: record what is here rather than let the folder vanish.
+      out.push({ ...record(folder), runnable: "unknown" });
+      return;
+    }
     let kids = [];
     try {
       kids = readdirSync(folder, { withFileTypes: true });

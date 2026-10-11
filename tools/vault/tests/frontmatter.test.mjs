@@ -19,6 +19,21 @@ test("round-trips through serialize", () => {
   assert.equal(b2, body);
 });
 
+test("array items containing commas and quotes survive repeated round-trips", () => {
+  const data = { slug: "x", site_features: ["Spreads — single card, three-card, Celtic Cross", 'say "hi"', "plain"] };
+  let text = serialize(data, "body\n");
+  for (let i = 0; i < 3; i++) {
+    const parsed = parseFrontmatter(text);
+    assert.deepEqual(parsed.data, data);
+    text = serialize(parsed.data, parsed.body);
+  }
+});
+
+test("throws on a frontmatter line it cannot read instead of dropping it", () => {
+  const text = "---\nslug: x\ncollaborators:\n  - lea\n---\n\nbody\n";
+  assert.throws(() => parseFrontmatter(text), /cannot read frontmatter line 4/);
+});
+
 test("returns empty data when no frontmatter", () => {
   const { data, body } = parseFrontmatter("# Just a title\n");
   assert.deepEqual(data, {});

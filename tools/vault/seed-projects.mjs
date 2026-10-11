@@ -4,10 +4,13 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { parseFrontmatter, serialize } from "./lib/frontmatter.mjs";
+import { parseFrontmatter, serialize, pinnedKeys } from "./lib/frontmatter.mjs";
 import { toSlug } from "./lib/slug.mjs";
 
-const SEED_KEYS = ["slug", "title", "category", "on_website", "live_url", "stack", "site_description", "site_features"];
+// Keys the site owns on every run. `stack` is set only when a file is created;
+// after that the code scan owns it (apply-scan.mjs). A key listed in the file's
+// `pinned` array is never touched.
+const SEED_KEYS = ["slug", "title", "category", "on_website", "live_url", "site_description", "site_features"];
 
 const CATEGORY_BY_ARCHIVE = {
   "apps-code": "app",
@@ -102,8 +105,9 @@ export async function seedProjects({ dataPath, outDir }) {
     const file = join(outDir, `${slug}.md`);
     if (existsSync(file)) {
       const { data, body } = parseFrontmatter(readFileSync(file, "utf8"));
+      const pinned = pinnedKeys(data);
       const next = { ...data };
-      for (const k of SEED_KEYS) next[k] = seed[k];
+      for (const k of SEED_KEYS) if (!pinned.has(k)) next[k] = seed[k];
       writeFileSync(file, serialize(next, body));
       skipped.push(slug);
     } else {

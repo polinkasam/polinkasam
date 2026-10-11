@@ -37,6 +37,22 @@ test("applies scan keys to an existing file, keeps other keys and body", () => {
   assert.deepEqual(result.updated, ["leira"]);
 });
 
+test("pinned keys are never overwritten by the scan", () => {
+  const dir = mkdtempSync(join(tmpdir(), "apply-"));
+  writeFileSync(
+    join(dir, "arcana-echo.md"),
+    '---\nslug: arcana-echo\nvercel_project: arcana-echo-v2\nlive_url: "https://arcana-echo-v2.vercel.app"\npinned: [vercel_project, live_url]\n---\n\nbody\n',
+  );
+  const records = [
+    { folder: join(ROOT, "apps/arcana-echo/repos/arcana-echo"), repo_remote: "https://github.com/polinkasam/arcana-echo.git", vercel_project: "arcana-echo", last_touched: "2026-01-18", backend: "supabase", stack: ["react"] },
+  ];
+  applyScan({ records, mapping: { "arcana-echo": "apps/arcana-echo/repos/arcana-echo" }, projectsDir: dir });
+  const { data } = parseFrontmatter(readFileSync(join(dir, "arcana-echo.md"), "utf8"));
+  assert.equal(data.vercel_project, "arcana-echo-v2");
+  assert.equal(data.live_url, "https://arcana-echo-v2.vercel.app");
+  assert.equal(data.repo_remote, "https://github.com/polinkasam/arcana-echo.git");
+});
+
 test("creates a file for a mapped slug missing from the site, and reports unmapped slugs and orphan folders", () => {
   const dir = mkdtempSync(join(tmpdir(), "apply-"));
   const records = [

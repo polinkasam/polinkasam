@@ -44,6 +44,22 @@ test("hidden entries are files with on_website false", async () => {
   assert.equal(s.data.on_website, false);
 });
 
+test("existing file keeps its stack (scan owns it) and any pinned keys", async () => {
+  const out = mkdtempSync(join(tmpdir(), "vault-"));
+  await seedProjects({ dataPath: fixture, outDir: out });
+  const p = join(out, "leira.md");
+  writeFileSync(
+    p,
+    `---\nslug: leira\ntitle: Leira (hand title)\nstack: [react, vite]\nlive_url: "https://leira-v2.vercel.app"\npinned: [title, live_url]\n---\n\nbody\n`,
+  );
+  await seedProjects({ dataPath: fixture, outDir: out });
+  const l = parseFrontmatter(readFileSync(p, "utf8"));
+  assert.deepEqual(l.data.stack, ["react", "vite"]);
+  assert.equal(l.data.title, "Leira (hand title)");
+  assert.equal(l.data.live_url, "https://leira-v2.vercel.app");
+  assert.equal(l.data.category, "app");
+});
+
 test("existing file keeps human-edited body and foreign keys, refreshes seed keys", async () => {
   const out = mkdtempSync(join(tmpdir(), "vault-"));
   await seedProjects({ dataPath: fixture, outDir: out });

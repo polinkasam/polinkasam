@@ -90,6 +90,18 @@ test("a folder with python files and a venv is one project, and venv is never en
   assert.equal(records[0].runnable, "python");
 });
 
+test("a folder nested at the depth limit with only a cache is still recorded as runnable unknown", async () => {
+  const root = mkdtempSync(join(tmpdir(), "deep-"));
+  const leaf = join(root, "apps", "kiddy-talk", "prototypes", "kidytalk", "kidytalk---bilingual-connector");
+  mkdirSync(join(leaf, ".vite", "deps"), { recursive: true });
+  writeFileSync(join(root, "apps", "kiddy-talk", "cover.png"), "");
+  const records = await scanFolders({ roots: [join(root, "apps")], walled: [] });
+  const hit = records.find((r) => r.folder.includes("kiddy"));
+  assert.ok(hit, "kiddy-talk must not vanish");
+  assert.equal(hit.runnable, "unknown");
+  assert.equal(hit.repo_remote, "none");
+});
+
 test("backend and framework detection", () => {
   assert.equal(detectBackend({ dependencies: { "@prisma/client": "1" } }), "prisma-postgres");
   assert.equal(detectBackend({ dependencies: { "@supabase/supabase-js": "1" } }), "supabase");

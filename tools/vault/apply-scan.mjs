@@ -3,7 +3,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
-import { parseFrontmatter, serialize } from "./lib/frontmatter.mjs";
+import { parseFrontmatter, serialize, pinnedKeys } from "./lib/frontmatter.mjs";
 
 const ROOT = "/Users/polinkasam/projects";
 
@@ -54,12 +54,16 @@ export function applyScan({ records, mapping, projectsDir }) {
       };
       body = PLACEHOLDER_BODY;
     }
-    data.repo_local = rel;
-    data.repo_remote = rec.repo_remote;
-    data.vercel_project = rec.vercel_project;
-    data.last_touched = rec.last_touched;
-    data.backend = rec.backend;
-    if (rec.stack && rec.stack.length) data.stack = rec.stack;
+    const pinned = pinnedKeys(data);
+    const set = (k, v) => {
+      if (!pinned.has(k)) data[k] = v;
+    };
+    set("repo_local", rel);
+    set("repo_remote", rec.repo_remote);
+    set("vercel_project", rec.vercel_project);
+    set("last_touched", rec.last_touched);
+    set("backend", rec.backend);
+    if (rec.stack && rec.stack.length) set("stack", rec.stack);
     writeFileSync(file, serialize(data, body));
     updated.push(slug);
   }

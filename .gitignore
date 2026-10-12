@@ -4,3 +4,12 @@
 *~
 .vscode/
 .idea/
+
+# Local Egregore state and secrets, never committed
+.env
+.egregore-session-id
+.egregore-state.json
+.egregore-boundary-consent
+.egregore-boundary.local.json
+__pycache__/
+memory

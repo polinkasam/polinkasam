@@ -1,0 +1,23 @@
+{
+  "arcana-echo": "apps/arcana-echo/repos/arcana-echo",
+  "leira": "apps/layra/repos/leira",
+  "cadence": "apps/cadence/repos/cadence",
+  "kiddy-talk": "apps/kiddy-talk/prototypes/kidytalk/kidytalk---bilingual-connector",
+  "finance-dashboard": "apps/finance-dashboard/repos/lexware-finance-dashboard",
+  "finance-dashboard-demo": "apps/finance-dashboard/repos/finance-dashboard-demo",
+  "grant-world": "other/grant-world",
+  "watch-my-dreams": "apps/watch-my-dreams/repos/watch-my-dreams",
+  "social-media-kit": "apps/social-media-kit/prototypes/social-kit-html",
+  "kineze": "apps/kineze/repos/kineze-landing",
+  "kineze-catwalk": "apps/kineze/prototypes/lidar-presence-bridge",
+  "amphibian-records": "apps/amphibian-records",
+  "deep-insight": "apps/deep-insight",
+  "ion": "apps/i-o-n/repos/aion",
+  "writings": "apps/portfolio-website/repos/palina-portfolio",
+  "personal-blog": "apps/personal-blog-polinka/repos/portfolio-site",
+  "pale-wind": "apps/pale-wind",
+  "vocal-notebook": "apps/singing/vocal-notebook",
+  "angelic": "apps/angelic",
+  "circe-product": "apps/circe-product/docs",
+  "tarot-app-prototype": "apps/arcana-echo/prototypes/tarot-app"
+}
